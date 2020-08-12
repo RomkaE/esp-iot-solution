@@ -12,7 +12,7 @@
 
 ## Solutions
 
->Current branch based on [ESP-IDF `v4.0.1`](https://github.com/espressif/esp-idf/tree/v4.0.1)
+> release/v1.1 based on [ESP-IDF `v4.0.1`](https://github.com/espressif/esp-idf/tree/v4.0.1)
 
 ## Contents
 
