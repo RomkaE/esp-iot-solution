@@ -158,7 +158,7 @@ static void touch_tune_tool_read_task(void *pvParameter)
                     break;
                 case TUNE_CTRL_INQUIRY:// send device setting, device parameter, device data
                     strncpy((char *)recv_mac, (char *)&tune_frame.frame.payload[1], 6);
-                    if (strcmp((char *)recv_mac, (char *)g_tune_mac) == 0) {
+                    if (strncmp((char *)recv_mac, (char *)g_tune_mac, 6) == 0) {
                         switch (tune_frame.frame.payload[0]) {
                         case TUNE_DEV_SETTING:
                             evt.frame_type = TUNE_DEV_SETTING;
@@ -203,17 +203,22 @@ static void touch_tune_tool_write_task(void *pvParameter)
     if (touch_tool_queue == NULL) {
         touch_tool_queue = xQueueCreate(10, sizeof(touch_tool_evt_t));
     }
+
+    esp_err_t res;
     while (1) {
         if (xQueueReceive(touch_tool_queue, &evt, 20 / portTICK_RATE_MS) == pdTRUE) {
             switch (evt.frame_type) {
             case TUNE_CTRL_DISCOVER:
-                tune_tool_send_device_info(&s_dev_info);
+                res = tune_tool_send_device_info(&s_dev_info);
+                ESP_ERROR_CHECK(res);
                 break;
             case TUNE_DEV_SETTING:
-                tune_tool_send_device_setting(&s_dev_setting, s_dev_comb_num);
+                res = tune_tool_send_device_setting(&s_dev_setting, s_dev_comb_num);
+                ESP_ERROR_CHECK(res);
                 break;
             case TUNE_DEV_PARAMETER:
-                tune_tool_send_device_parameter(&s_dev_para);
+                res = tune_tool_send_device_parameter(&s_dev_para);
+                ESP_ERROR_CHECK(res);
                 break;
             case TUNE_DEV_DATA:
                 time = evt.time;
@@ -227,7 +232,8 @@ static void touch_tune_tool_write_task(void *pvParameter)
             }
         }
         if (((xTaskGetTickCount() - time) < 5000 / portTICK_RATE_MS) && send_enable) {
-            tune_tool_send_device_data(s_dev_data);
+            res = tune_tool_send_device_data(s_dev_data);
+            ESP_ERROR_CHECK(res);
         } else {
             send_enable = false;
         }

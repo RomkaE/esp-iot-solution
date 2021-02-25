@@ -538,7 +538,7 @@ tp_handle_t iot_tp_create(touch_pad_t touch_pad_num, float sensitivity)
     tune_dev_info_t dev_info = {0};
     dev_info.dev_cid = TUNE_CID_ESP32;
     dev_info.dev_ver = TUNE_VERSION_V0;
-    esp_wifi_get_mac(ESP_IF_WIFI_STA, dev_info.dev_mac);
+    esp_base_mac_addr_get(dev_info.dev_mac);
     tune_tool_set_device_info(&dev_info);
 
     tune_dev_parameter_t dev_para = {0};
