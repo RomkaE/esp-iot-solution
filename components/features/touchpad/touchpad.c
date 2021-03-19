@@ -33,6 +33,8 @@
 #include "touch_tune_tool.h"
 #endif
 
+#define USE_ESP_TIMER       CONFIG_TOUCH_PAD_USE_ESP_TIMER
+
 #define IOT_CHECK(tag, a, ret)  if(!(a)) {                                             \
         ESP_LOGE(tag,"%s:%d (%s)", __FILE__, __LINE__, __FUNCTION__);      \
         return (ret);                                                                   \
@@ -106,7 +108,14 @@ typedef struct {
     /*Serial trigger parameter*/
     uint32_t serial_thres_sec;  //Continuously triggered threshold parameters.
     uint32_t serial_interval_ms;//Continuously triggered counting parameters.
-    xTimerHandle serial_tmr;    //A timer that continuously triggers actions.
+
+    #if USE_ESP_TIMER
+    uint32_t interval_ms;
+    esp_timer_handle_t serial_tmr;
+    #else
+    TimerHandle_t serial_tmr;
+    #endif
+
     tp_cb_t serial_cb;          //A callback.
     tp_cb_t *cb_group[TOUCHPAD_CB_MAX]; //Stores global variables for each channel parameter.
     tp_custom_cb_t *custom_cbs; //User-defined callback function.
@@ -124,7 +133,12 @@ typedef struct {
 struct tp_custom_cb {
     tp_cb cb;
     void *arg;
+    #if USE_ESP_TIMER
+    uint32_t interval_ms;
+    esp_timer_handle_t tmr;
+    #else
     TimerHandle_t tmr;
+    #endif
     tp_dev_t *tp_dev;
     tp_custom_cb_t *next_cb;
 };
@@ -154,7 +168,11 @@ typedef struct {
     tp_matrix_cb_t serial_cb;
     uint32_t serial_thres_sec;
     uint32_t serial_interval_ms;
-    xTimerHandle serial_tmr;
+    #if USE_ESP_TIMER
+    esp_timer_handle_t serial_tmr;
+    #else
+    TimerHandle_t serial_tmr;
+    #endif
     tp_status_t active_state;
     uint8_t active_idx;
     uint8_t x_num;
@@ -170,7 +188,12 @@ typedef struct tp_matrix_arg {
 struct tp_matrix_cus_cb {
     tp_matrix_cb cb;
     void *arg;
+    #if USE_ESP_TIMER
+    esp_timer_handle_t tmr;
+    uint32_t interval_ms;
+    #else
     TimerHandle_t tmr;
+    #endif
     tp_matrix_t *tp_matrix;
     tp_matrix_cus_cb_t *next_cb;
 };
@@ -180,6 +203,35 @@ static const char *TAG = "touchpad";        // Debug tag in esp log
 static bool g_init_flag = false;            // Judge if initialized the global setting of touch.
 static tp_dev_t *tp_group[TOUCH_PAD_MAX];   // Buffer of each button.
 static xSemaphoreHandle s_tp_mux = NULL;
+
+#if USE_ESP_TIMER
+static void stop_timer(esp_timer_handle_t tmr) {
+    esp_err_t res;
+    res = esp_timer_stop(tmr);
+    if (res != ESP_ERR_INVALID_STATE)
+        ESP_ERROR_CHECK(res);
+}
+
+void delete_timer(TimerHandle_t tmr) {
+  esp_err_t res;
+  if (tmr != NULL)
+  {
+      res = esp_timer_stop(tmr);
+      if (res != ESP_ERR_INVALID_STATE)
+          ESP_ERROR_CHECK(res);
+      res = esp_timer_delete(tmr);
+      ESP_ERROR_CHECK(res);
+  }
+}
+#else
+static void stop_timer(TimerHandle_t tmr) {
+    xTimerStop(tmr, portMAX_DELAY);
+}
+
+static void delete_timer(TimerHandle_t tmr) {
+    xTimerDelete(tmr, portMAX_DELAY);
+}
+#endif
 
 /* IIR filter for silder position. */
 static uint32_t _slider_filter_iir(uint32_t in_now, uint32_t out_last, uint32_t k)
@@ -309,17 +361,27 @@ static inline void callback_exec(tp_dev_t *tp_dev, tp_cb_type_t cb_type)
 }
 
 /* check and run the hooked callback function */
-static void tp_serial_timer_cb(TimerHandle_t xTimer)
+static void tp_serial_timer_cb(void *tmr)
 {
-    tp_dev_t *tp_dev = (tp_dev_t *) pvTimerGetTimerID(xTimer);
+    #if USE_ESP_TIMER
+    tp_dev_t *tp_dev = (tp_dev_t*)(tmr);
+    #else
+    tp_dev_t *tp_dev = (tp_dev_t *) pvTimerGetTimerID(tmr);
+    #endif
+
     if (tp_dev->serial_cb.cb != NULL) {
         tp_dev->serial_cb.cb(tp_dev->serial_cb.arg);
     }
 }
 
-static void tp_custom_timer_cb(TimerHandle_t xTimer)
+static void tp_custom_timer_cb(void *tmr)
 {
-    tp_custom_cb_t *custom_cb = (tp_custom_cb_t *) pvTimerGetTimerID(xTimer);
+    #if USE_ESP_TIMER
+    tp_custom_cb_t *custom_cb = (tp_custom_cb_t*)(tmr);
+    #else
+    tp_custom_cb_t *custom_cb = (tp_custom_cb_t *) pvTimerGetTimerID(tmr);
+    #endif
+
     custom_cb->tp_dev->state = TOUCHPAD_STATE_PRESS;
     custom_cb->cb(custom_cb->arg);
 }
@@ -330,7 +392,16 @@ static inline void tp_custom_reset_cb_tmrs(tp_dev_t *tp_dev)
     tp_custom_cb_t *custom_cb = tp_dev->custom_cbs;
     while (custom_cb != NULL) {
         if (custom_cb->tmr != NULL) {
+            #if USE_ESP_TIMER
+            esp_err_t res;
+            res = esp_timer_stop(custom_cb->tmr);
+            if (res != ESP_ERR_INVALID_STATE)
+                ESP_ERROR_CHECK(res);
+            res = esp_timer_start_once(custom_cb->tmr, custom_cb->interval_ms * 1000);
+            ESP_ERROR_CHECK(res);
+            #else
             xTimerReset(custom_cb->tmr, portMAX_DELAY);
+            #endif
         }
         custom_cb = custom_cb->next_cb;
     }
@@ -342,7 +413,14 @@ static inline void tp_custom_stop_cb_tmrs(tp_dev_t *tp_dev)
     tp_custom_cb_t *custom_cb = tp_dev->custom_cbs;
     while (custom_cb != NULL) {
         if (custom_cb->tmr != NULL) {
+            #if USE_ESP_TIMER
+            esp_err_t res;
+            res = esp_timer_stop(custom_cb->tmr);
+            if (res != ESP_ERR_INVALID_STATE)
+              ESP_ERROR_CHECK(res);
+            #else
             xTimerStop(custom_cb->tmr, portMAX_DELAY);
+            #endif
         }
         custom_cb = custom_cb->next_cb;
     }
@@ -418,7 +496,13 @@ void filter_read_cb(uint16_t raw_data[], uint16_t filtered_data[])
                             && tp_dev->sum_ms >= tp_dev->serial_thres_sec * 1000) {
                         tp_dev->state = TOUCHPAD_STATE_PRESS;
                         tp_dev->serial_cb.cb(tp_dev->serial_cb.arg);
+                        #if USE_ESP_TIMER == 1
+                        esp_err_t res;
+                        res = esp_timer_start_periodic(tp_dev->serial_tmr, tp_dev->interval_ms);
+                        ESP_ERROR_CHECK(res);
+                        #else
                         xTimerStart(tp_dev->serial_tmr, portMAX_DELAY);
+                        #endif
                     }
                 } else {    // Check the release action.
                     //  Debounce processing.
@@ -434,7 +518,14 @@ void filter_read_cb(uint16_t raw_data[], uint16_t filtered_data[])
                         callback_exec(tp_dev, TOUCHPAD_CB_RELEASE);
                         tp_custom_stop_cb_tmrs(tp_dev);
                         if (tp_dev->serial_tmr) {
+                            #if USE_ESP_TIMER == 1
+                            esp_err_t res;
+                            res = esp_timer_stop(tp_dev->serial_tmr);
+                            if (res != ESP_ERR_INVALID_STATE)
+                                ESP_ERROR_CHECK(res);
+                            #else
                             xTimerStop(tp_dev->serial_tmr, portMAX_DELAY);
+                            #endif
                         }
                     }
                 }
@@ -571,16 +662,14 @@ esp_err_t iot_tp_delete(tp_handle_t tp_handle)
     tp_custom_cb_t *custom_cb = tp_dev->custom_cbs;
     while (custom_cb != NULL) {
         tp_custom_cb_t *cb_next = custom_cb->next_cb;
-        xTimerStop(custom_cb->tmr, portMAX_DELAY);
-        xTimerDelete(custom_cb->tmr, portMAX_DELAY);
+        delete_timer(custom_cb->tmr);
         custom_cb->tmr = NULL;
         free(custom_cb);
         custom_cb = cb_next;
     }
     tp_dev->custom_cbs = NULL;
     if (tp_dev->serial_tmr != NULL) {
-        xTimerStop(tp_dev->serial_tmr, portMAX_DELAY);
-        xTimerDelete(tp_dev->serial_tmr, portMAX_DELAY);
+        delete_timer(tp_dev->serial_tmr);
         tp_dev->serial_tmr = NULL;
     }
     free(tp_handle);
@@ -615,10 +704,23 @@ esp_err_t iot_tp_set_serial_trigger(tp_handle_t tp_handle, uint32_t trigger_thre
     IOT_CHECK(TAG, interval_ms > portTICK_RATE_MS, ESP_FAIL);
     tp_dev_t *tp_dev = (tp_dev_t *) tp_handle;
     if (tp_dev->serial_tmr == NULL) {
+        #if USE_ESP_TIMER == 1
+        tp_dev->interval_ms = interval_ms;
+        esp_timer_create_args_t timer_args;
+        timer_args.arg = tp_dev;
+        timer_args.callback = tp_serial_timer_cb;
+        timer_args.dispatch_method = ESP_TIMER_TASK;
+        timer_args.name = "serial_tmr";
+        esp_timer_create(&timer_args, &tp_dev->serial_tmr);
+        #else
         tp_dev->serial_tmr = xTimerCreate("serial_tmr", interval_ms / portTICK_RATE_MS, pdTRUE, tp_dev, tp_serial_timer_cb);
         POINT_ASSERT(TAG, tp_dev->serial_tmr);
+        #endif
     } else {
+        #if USE_ESP_TIMER
+        #else
         xTimerChangePeriod(tp_dev->serial_tmr, interval_ms / portTICK_RATE_MS, portMAX_DELAY);
+        #endif
     }
     tp_dev->serial_thres_sec = trigger_thres_sec;
     tp_dev->serial_interval_ms = interval_ms;
@@ -638,7 +740,17 @@ esp_err_t iot_tp_add_custom_cb(tp_handle_t tp_handle, uint32_t press_sec, tp_cb 
     cb_new->cb = cb;
     cb_new->arg = arg;
     cb_new->tp_dev = tp_dev;
+    #if USE_ESP_TIMER == 1
+    cb_new->interval_ms = press_sec * 1000;
+    esp_timer_create_args_t timer_args;
+    timer_args.arg = cb_new;
+    timer_args.callback = tp_custom_timer_cb;
+    timer_args.dispatch_method = ESP_TIMER_TASK;
+    timer_args.name = "custom_cb_tmr";
+    esp_timer_create(&timer_args, &cb_new->tmr);
+    #else
     cb_new->tmr = xTimerCreate("custom_cb_tmr", press_sec * 1000 / portTICK_RATE_MS, pdFALSE, cb_new, tp_custom_timer_cb);
+    #endif
     if (cb_new->tmr == NULL) {
         ESP_LOGE(TAG, "timer create fail! %s:%d (%s)", __FILE__, __LINE__, __FUNCTION__);
         free(cb_new);
@@ -786,7 +898,16 @@ static inline void matrix_reset_cb_tmrs(tp_matrix_t *tp_matrix)
     tp_matrix_cus_cb_t *custom_cb = tp_matrix->custom_cbs;
     while (custom_cb != NULL) {
         if (custom_cb->tmr != NULL) {
+            #if USE_ESP_TIMER == 1
+            esp_err_t res;
+            res = esp_timer_stop(custom_cb->tmr);
+            if (res != ESP_ERR_INVALID_STATE)
+                ESP_ERROR_CHECK(res);
+            res = esp_timer_start_once(custom_cb->tmr, custom_cb->interval_ms * 1000);
+            ESP_ERROR_CHECK(res);
+            #else
             xTimerReset(custom_cb->tmr, portMAX_DELAY);
+            #endif
         }
         custom_cb = custom_cb->next_cb;
     }
@@ -798,7 +919,7 @@ static inline void matrix_stop_cb_tmrs(tp_matrix_t *tp_matrix)
     tp_matrix_cus_cb_t *custom_cb = tp_matrix->custom_cbs;
     while (custom_cb != NULL) {
         if (custom_cb->tmr != NULL) {
-            xTimerStop(custom_cb->tmr, portMAX_DELAY);
+            stop_timer(custom_cb->tmr);
         }
         custom_cb = custom_cb->next_cb;
     }
@@ -862,7 +983,10 @@ static void tp_matrix_push_cb(void *arg)
         }
         matrix_reset_cb_tmrs(tp_matrix);
         if (tp_matrix->serial_tmr != NULL) {
+            #if USE_ESP_TIMER == 1
+            #else
             xTimerChangePeriod(tp_matrix->serial_tmr, tp_matrix->serial_thres_sec * 1000 / portTICK_RATE_MS, portMAX_DELAY);
+            #endif
         }
     }
 }
@@ -887,7 +1011,7 @@ static void tp_matrix_release_cb(void *arg)
         }
         matrix_stop_cb_tmrs(tp_matrix);
         if (tp_matrix->serial_tmr != NULL) {
-            xTimerStop(tp_matrix->serial_tmr, portMAX_DELAY);
+            stop_timer(tp_matrix->serial_tmr);
         }
     }
 }
@@ -910,9 +1034,14 @@ static void tp_matrix_tap_cb(void *arg)
     }
 }
 
-static void tp_matrix_cus_tmr_cb(TimerHandle_t xTimer)
+static void tp_matrix_cus_tmr_cb(void *tmr)
 {
-    tp_matrix_cus_cb_t *tp_matrix_cb = (tp_matrix_cus_cb_t *) pvTimerGetTimerID(xTimer);
+    #if USE_ESP_TIMER == 1
+    tp_matrix_cus_cb_t *tp_matrix_cb = (tp_matrix_cus_cb_t*)tmr;
+    #else
+    tp_matrix_cus_cb_t *tp_matrix_cb = (tp_matrix_cus_cb_t*)pvTimerGetTimerID(tmr);
+    #endif
+
     tp_matrix_t *tp_matrix = tp_matrix_cb->tp_matrix;
     if (tp_matrix->active_state != TOUCHPAD_STATE_IDLE) {
         tp_matrix->active_state = TOUCHPAD_STATE_PRESS;
@@ -921,14 +1050,23 @@ static void tp_matrix_cus_tmr_cb(TimerHandle_t xTimer)
     }
 }
 
-static void tp_matrix_serial_trigger_cb(TimerHandle_t xTimer)
+static void tp_matrix_serial_trigger_cb(void *tmr)
 {
-    tp_matrix_t *tp_matrix = (tp_matrix_t *) pvTimerGetTimerID(xTimer);
+    #if USE_ESP_TIMER == 1
+    tp_matrix_t *tp_matrix = (tp_matrix_t *)tmr;
+    #else
+    tp_matrix_t *tp_matrix = (tp_matrix_t *)pvTimerGetTimerID(tmr);
+    #endif
+
     if (tp_matrix->active_state != TOUCHPAD_STATE_IDLE) {
         tp_matrix->active_state = TOUCHPAD_STATE_PRESS;
         uint8_t idx = tp_matrix->active_idx;
         tp_matrix->serial_cb.cb(tp_matrix->serial_cb.arg, idx / tp_matrix->y_num, idx % tp_matrix->y_num);
+
+        #if USE_ESP_TIMER == 1
+        #else
         xTimerChangePeriod(tp_matrix->serial_tmr, tp_matrix->serial_interval_ms / portTICK_RATE_MS, portMAX_DELAY);
+        #endif
     }
 }
 
@@ -1045,15 +1183,13 @@ esp_err_t iot_tp_matrix_delete(tp_matrix_handle_t tp_matrix_hd)
     tp_matrix_cus_cb_t *custom_cb = tp_matrix->custom_cbs;
     while (custom_cb != NULL) {
         tp_matrix_cus_cb_t *cb_next = custom_cb->next_cb;
-        xTimerStop(custom_cb->tmr, portMAX_DELAY);
-        xTimerDelete(custom_cb->tmr, portMAX_DELAY);
+        delete_timer(custom_cb->tmr);
         custom_cb->tmr = NULL;
         free(custom_cb);
         custom_cb = cb_next;
     }
     if (tp_matrix->serial_tmr != NULL) {
-        xTimerStop(tp_matrix->serial_tmr, portMAX_DELAY);
-        xTimerDelete(tp_matrix->serial_tmr, portMAX_DELAY);
+        delete_timer(tp_matrix->serial_tmr);
         tp_matrix->serial_tmr = NULL;
     }
     tp_matrix->custom_cbs = NULL;
@@ -1090,7 +1226,19 @@ esp_err_t iot_tp_matrix_add_custom_cb(tp_matrix_handle_t tp_matrix_hd, uint32_t 
     tp_matrix_t *tp_matrix = (tp_matrix_t *) tp_matrix_hd;
     tp_matrix_cus_cb_t *cb_new = (tp_matrix_cus_cb_t *) calloc(1, sizeof(tp_matrix_cus_cb_t));
     POINT_ASSERT(TAG, cb_new);
+
+    #if USE_ESP_TIMER == 1
+    cb_new->interval_ms = press_sec * 1000;
+    esp_timer_create_args_t timer_args;
+    timer_args.arg = cb_new;
+    timer_args.callback = tp_matrix_cus_tmr_cb;
+    timer_args.dispatch_method = ESP_TIMER_TASK;
+    timer_args.name = "custom_cb_tmr";
+    esp_timer_create(&timer_args, &cb_new->tmr);
+    #else
     cb_new->tmr = xTimerCreate("custom_tmr", press_sec * 1000 / portTICK_RATE_MS, pdFALSE, cb_new, tp_matrix_cus_tmr_cb);
+    #endif
+
     if (cb_new->tmr == NULL) {
         ESP_LOGE(TAG, "timer create fail! %s:%d (%s)", __FILE__, __LINE__, __FUNCTION__);
         free(cb_new);
@@ -1115,7 +1263,16 @@ esp_err_t iot_tp_matrix_set_serial_trigger(tp_matrix_handle_t tp_matrix_hd, uint
     tp_matrix->serial_cb.arg = arg;
     tp_matrix->serial_thres_sec = trigger_thres_sec;
     tp_matrix->serial_interval_ms = interval_ms;
+    #if USE_ESP_TIMER == 1
+    esp_timer_create_args_t timer_args;
+    timer_args.arg = tp_matrix;
+    timer_args.callback = tp_matrix_serial_trigger_cb;
+    timer_args.dispatch_method = ESP_TIMER_TASK;
+    timer_args.name = "serial_tmr";
+    esp_timer_create(&timer_args, &tp_matrix->serial_tmr);
+    #else
     tp_matrix->serial_tmr = xTimerCreate("serial_tmr", trigger_thres_sec * 1000 / portTICK_RATE_MS, pdFALSE, tp_matrix, tp_matrix_serial_trigger_cb);
+    #endif
     POINT_ASSERT(TAG, tp_matrix->serial_tmr);
     return ESP_OK;
 }

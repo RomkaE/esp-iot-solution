@@ -1,4 +1,2 @@
-
-  source "$PROJECT_PATH/components/esp-iot-solution/components/features/touchpad/Kconfig"
-  source "$PROJECT_PATH/components/esp-iot-solution/components/general/button/Kconfig"
-
+source "$PROJECT_PATH/components/esp-iot-solution/components/features/touchpad/Kconfig"
+ 
