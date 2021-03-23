@@ -46,10 +46,14 @@
 #define TIMER_CALLBACK_MAX_WAIT_TICK    (0)
 /*************Fixed Parameters********************/
 #define SLDER_POS_FILTER_FACTOR_DEFAULT             4       /**< Slider IIR filter parameters. */
-#define TOUCHPAD_FILTER_IDLE_PERIOD                 100     /**< Period of IIR filter in ms when sensor is not touched. */
-#define TOUCHPAD_FILTER_TOUCH_PERIOD                10      /**< Period of IIR filter in ms when sensor is being touched.
+#define TOUCHPAD_FILTER_IDLE_PERIOD                 40      /**< Period of IIR filter in ms when sensor is not touched. */
+#define TOUCHPAD_FILTER_TOUCH_PERIOD                40      /**< Period of IIR filter in ms when sensor is being touched.
                                                                  Shouldn't change this value. */
-#define TOUCHPAD_STATE_SWITCH_DEBOUNCE              20      /**< 20ms; Debounce threshold. */
+
+#define TOUCHPAD_MEAS_CYCLE_US                      8192    /* 8192 - max */
+#define TOUCHPAD_SLEEP_CYCLE_MS                     (40-8)     /* 437 - max */
+
+#define TOUCHPAD_STATE_SWITCH_DEBOUNCE              80      /**< 80ms; Debounce threshold. */
 #define TOUCHPAD_BASELINE_RESET_COUNT_THRESHOLD     5       /**< 5 count number; All channels; */
 #define TOUCHPAD_BASELINE_UPDATE_COUNT_THRESHOLD    800     /**< 800ms; Baseline update cycle. */
 #define TOUCHPAD_TOUCH_LOW_SENSE_THRESHOLD          0.03    /**< 3% ; Set the low sensitivity threshold.
@@ -573,6 +577,17 @@ tp_handle_t iot_tp_create(touch_pad_t touch_pad_num, float sensitivity)
         touch_pad_set_voltage(TOUCH_HVOLT_2V7, TOUCH_LVOLT_0V5, TOUCH_HVOLT_ATTEN_1V);
         touch_pad_filter_start(TOUCHPAD_FILTER_TOUCH_PERIOD);
         touch_pad_set_filter_read_cb(filter_read_cb);
+
+        // Set FSM mode:
+        uint32_t sleep_cycle = TOUCHPAD_SLEEP_CYCLE_MS * 150;   // TODO - use <rtc_clk_slow_freq_get_hz>
+        if (sleep_cycle > 0xffff)
+          sleep_cycle = 0xffff;
+        uint32_t meas_cycle = TOUCHPAD_MEAS_CYCLE_US * 8;
+        if (meas_cycle > 0xffff)
+          meas_cycle = 0xffff;
+        esp_err_t res = touch_pad_set_meas_time(sleep_cycle, (uint16_t)meas_cycle);
+        res = touch_pad_set_fsm_mode(TOUCH_FSM_MODE_TIMER);
+        ESP_ERROR_CHECK(res);
     }
     IOT_CHECK(TAG, touch_pad_num < TOUCH_PAD_MAX, NULL);
     IOT_CHECK(TAG, sensitivity > 0, NULL);
