@@ -1,4 +1,45 @@
 menu "Touch Sensor"
+           
+    config TOUCH_PAD_USE_SINGLE_BUTTON
+        bool "Use Touch Pad type <Single Button>"
+        default y
+
+    config TOUCH_PAD_USE_MATRIX_BUTTON
+        bool "Use Touch Pad type <Matrix Button>"
+        default n
+
+    config TOUCH_PAD_USE_SLIDER
+        bool "Use Touch Pad type <Slider>"
+        default n
+        
+    config TOUCH_PAD_USE_CB_TAP_EVENT
+        bool "Use CallBack for the event <Tap>"
+        default n
+
+    config TOUCH_PAD_USE_CB_SLIDE_EVENT
+        bool "Use CallBack for the event <Slide>"
+        default n
+        
+    config TOUCH_PAD_USE_CB_SERIAL
+        bool "Use additional CallBack <Serial>"
+        default n
+        
+	config TOUCH_PAD_USE_CB_CUSTOM
+        bool "Use additional CallBack <Custom>"
+        default n
+        
+	choice TOUCH_PAD_TIMER_IMPLEMENT
+	    bool "Touch Pad Timer implementation"
+	    default TOUCH_PAD_USE_RTOS_TIMER
+	    help 
+	        Choose a implementation of timer for touch pad instance.
+	        
+	    config TOUCH_PAD_USE_ESP_TIMER
+	        bool "Use ESP Timer"
+	    config TOUCH_PAD_USE_RTOS_TIMER
+	        bool "Use FreeRTOS Timer"
+    endchoice
+        
     config DATA_SCOPE_DEBUG
         bool "Data scope debug (ESP-Tuning Tool)"
         default n

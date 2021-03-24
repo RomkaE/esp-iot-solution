@@ -35,8 +35,12 @@ typedef void (* tp_matrix_cb)(void *, uint8_t, uint8_t);      /**< callback func
 typedef enum {
     TOUCHPAD_CB_PUSH = 0,        /**< touch pad push callback */
     TOUCHPAD_CB_RELEASE,         /**< touch pad release callback */
+#if CONFIG_TOUCH_PAD_USE_CB_TAP_EVENT
     TOUCHPAD_CB_TAP,             /**< touch pad quick tap callback */
+#endif
+#if CONFIG_TOUCH_PAD_USE_CB_SLIDE_EVENT
     TOUCHPAD_CB_SLIDE,           /**< touch pad slide type callback */
+#endif
     TOUCHPAD_CB_MAX,
 } tp_cb_type_t;
 
@@ -79,6 +83,7 @@ esp_err_t iot_tp_delete(tp_handle_t tp_handle);
   */
 esp_err_t iot_tp_add_cb(tp_handle_t tp_handle, tp_cb_type_t cb_type, tp_cb cb, void  *arg);
 
+#if CONFIG_TOUCH_PAD_USE_CB_SERIAL
 /**
   * @brief set serial trigger
   *
@@ -93,7 +98,9 @@ esp_err_t iot_tp_add_cb(tp_handle_t tp_handle, tp_cb_type_t cb_type, tp_cb cb, v
   *     - ESP_FAIL: fail
   */
 esp_err_t iot_tp_set_serial_trigger(tp_handle_t tp_handle, uint32_t trigger_thres_sec, uint32_t interval_ms, tp_cb cb, void *arg);
+#endif
 
+#if CONFIG_TOUCH_PAD_USE_CB_CUSTOM
 /**
   * @brief add custom callback function
   *
@@ -107,6 +114,7 @@ esp_err_t iot_tp_set_serial_trigger(tp_handle_t tp_handle, uint32_t trigger_thre
   *     - ESP_FAIL: fail
   */
 esp_err_t iot_tp_add_custom_cb(tp_handle_t tp_handle, uint32_t press_sec, tp_cb cb, void  *arg);
+#endif
 
 /**
   * @brief get the number of a touchpad
@@ -142,30 +150,6 @@ esp_err_t iot_tp_set_threshold(tp_handle_t tp_handle, float threshold);
 esp_err_t iot_tp_get_threshold(const tp_handle_t tp_handle, float *threshold);
 
 /**
-  * @brief Get the IIR filter interval of touch sensor when touching.
-  *
-  * @param tp_handle Touch pad handle.
-  * @param filter_ms
-  *
-  * @return
-  *     - ESP_OK: succeed
-  *     - ESP_FAIL: the param tp_handle is NULL
-  */
-esp_err_t iot_tp_get_touch_filter_interval(const tp_handle_t tp_handle, uint32_t *filter_ms);
-
-/**
-  * @brief Get the IIR filter interval of touch sensor when idle.
-  *
-  * @param tp_handle Touch pad handle.
-  * @param filter_ms
-  *
-  * @return
-  *     - ESP_OK: succeed
-  *     - ESP_FAIL: the param tp_handle is NULL
-  */
-esp_err_t iot_tp_get_idle_filter_interval(const tp_handle_t tp_handle, uint32_t *filter_ms);
-
-/**
   * @brief Get filtered touch sensor counter value from IIR filter process.
   *
   * @param tp_handle Touch pad handle.
@@ -189,6 +173,7 @@ esp_err_t iot_tp_read(tp_handle_t tp_handle, uint16_t *touch_value_ptr);
   */
 esp_err_t tp_read_raw(const tp_handle_t tp_handle, uint16_t *touch_value_ptr);
 
+#if CONFIG_TOUCH_PAD_USE_SLIDER
 /**
   * @brief Create touchpad slide device.
   *
@@ -225,6 +210,8 @@ uint8_t iot_tp_slide_position(tp_slide_handle_t tp_slide_handle);
   *     - ESP_FAIL: the param tp_slide_handle is NULL
   */
 esp_err_t iot_tp_slide_delete(tp_slide_handle_t tp_slide_handle);
+
+#endif /* CONFIG_TOUCH_PAD_USE_SLIDER */
 
 /**
   * @brief create touchpad matrix device

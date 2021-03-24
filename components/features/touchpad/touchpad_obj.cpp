@@ -33,15 +33,19 @@ esp_err_t CTouchPad::add_cb(tp_cb_type_t cb_type, tp_cb cb, void  *arg)
     return iot_tp_add_cb(m_tp_handle, cb_type, cb, arg);
 }
 
+#if CONFIG_TOUCH_PAD_USE_CB_SERIAL
 esp_err_t CTouchPad::set_serial_trigger(uint32_t trigger_thres_sec, uint32_t interval_ms, tp_cb cb, void *arg)
 {
     return iot_tp_set_serial_trigger(m_tp_handle, trigger_thres_sec, interval_ms, cb, arg);
 }
+#endif
 
+#if CONFIG_TOUCH_PAD_USE_CB_CUSTOM
 esp_err_t CTouchPad::add_custom_cb(uint32_t press_sec, tp_cb cb, void  *arg)
 {
     return iot_tp_add_custom_cb(m_tp_handle, press_sec, cb, arg);
 }
+#endif
 
 touch_pad_t CTouchPad::tp_num()
 {
@@ -65,6 +69,7 @@ uint16_t CTouchPad::value()
     return tp_value;
 }
 
+#if CONFIG_TOUCH_PAD_USE_CB_SLIDE
 CTouchPadSlide::CTouchPadSlide(uint8_t num, const touch_pad_t *tps, uint32_t pos_range, const float *p_sensitivity)
 {
     m_tp_slide_handle = iot_tp_slide_create(num, tps, pos_range, p_sensitivity);
@@ -80,6 +85,7 @@ uint8_t CTouchPadSlide::get_position()
 {
     return iot_tp_slide_position(m_tp_slide_handle);
 }
+#endif
 
 CTouchPadMatrix::CTouchPadMatrix(uint8_t x_num, uint8_t y_num, const touch_pad_t *x_tps, \
         const touch_pad_t *y_tps, const float *p_sensitivity)

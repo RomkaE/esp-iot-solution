@@ -29,6 +29,8 @@
 #include "iot_touchpad.h"
 #include "sdkconfig.h"
 
+#include "hal/touch_sensor_hal.h"
+
 #ifdef CONFIG_DATA_SCOPE_DEBUG
 #include "touch_tune_tool.h"
 #endif
@@ -44,28 +46,27 @@
 #define POINT_ASSERT(tag, param)    IOT_CHECK(tag, (param) != NULL, ESP_FAIL)
 #define RES_ASSERT(tag, res, ret)   IOT_CHECK(tag, (res) != pdFALSE, ret)
 #define TIMER_CALLBACK_MAX_WAIT_TICK    (0)
+
 /*************Fixed Parameters********************/
 #define SLDER_POS_FILTER_FACTOR_DEFAULT             4       /**< Slider IIR filter parameters. */
-#define TOUCHPAD_FILTER_IDLE_PERIOD                 40      /**< Period of IIR filter in ms when sensor is not touched. */
-#define TOUCHPAD_FILTER_TOUCH_PERIOD                40      /**< Period of IIR filter in ms when sensor is being touched.
-                                                                 Shouldn't change this value. */
 
+#define TOUCHPAD_MEAS_PERIOD_MS                     40
 #define TOUCHPAD_MEAS_CYCLE_US                      8192    /* 8192 - max */
-#define TOUCHPAD_SLEEP_CYCLE_MS                     (40-8)     /* 437 - max */
+#define TOUCHPAD_SLEEP_CYCLE_MS                     (TOUCHPAD_MEAS_PERIOD_MS - TOUCHPAD_MEAS_CYCLE_US/1000)     /* 437 - max */
 
-#define TOUCHPAD_STATE_SWITCH_DEBOUNCE              80      /**< 80ms; Debounce threshold. */
+#define TOUCHPAD_STATE_SWITCH_DEBOUNCE              160     /**< 160ms; Debounce threshold max coun value. */
 #define TOUCHPAD_BASELINE_RESET_COUNT_THRESHOLD     5       /**< 5 count number; All channels; */
 #define TOUCHPAD_BASELINE_UPDATE_COUNT_THRESHOLD    800     /**< 800ms; Baseline update cycle. */
-#define TOUCHPAD_TOUCH_LOW_SENSE_THRESHOLD          0.03    /**< 3% ; Set the low sensitivity threshold.
+#define TOUCHPAD_TOUCH_LOW_SENSE_THRESHOLD          ((float)0.03)    /**< 3% ; Set the low sensitivity threshold.
                                                                  When less than this threshold, remove the jitter processing. */
-#define TOUCHPAD_TOUCH_THRESHOLD_PERCENT            0.75    /**< 75%; This is button type triggering threshold, should be larger than noise threshold.
+#define TOUCHPAD_TOUCH_THRESHOLD_PERCENT            ((float)0.75)    /**< 75%; This is button type triggering threshold, should be larger than noise threshold.
                                                                  The threshold determines the sensitivity of the touch. */
-#define TOUCHPAD_NOISE_THRESHOLD_PERCENT            0.20    /**< 20%; The threshold is used to determine whether to update the baseline.
+#define TOUCHPAD_NOISE_THRESHOLD_PERCENT            ((float)0.20)    /**< 20%; The threshold is used to determine whether to update the baseline.
                                                                  The touch system has a signal-to-noise ratio of at least 5:1. */
-#define TOUCHPAD_HYSTERESIS_THRESHOLD_PERCENT       0.10    /**< 10%; The threshold prevents frequent triggering. */
-#define TOUCHPAD_BASELINE_RESET_THRESHOLD_PERCENT   0.20    /**< 20%; If the touch data exceed this threshold
+#define TOUCHPAD_HYSTERESIS_THRESHOLD_PERCENT       ((float)0.10)    /**< 10%; The threshold prevents frequent triggering. */
+#define TOUCHPAD_BASELINE_RESET_THRESHOLD_PERCENT   ((float)0.20)    /**< 20%; If the touch data exceed this threshold
                                                                  for 'RESET_COUNT_THRESHOLD' times, then reset baseline to raw data. */
-#define TOUCHPAD_SLIDER_TRIGGER_THRESHOLD_PERCENT   0.50    /**< 50%; This is slider type triggering threshold, should large than noise threshold.
+#define TOUCHPAD_SLIDER_TRIGGER_THRESHOLD_PERCENT   ((float)0.50)    /**< 50%; This is slider type triggering threshold, should large than noise threshold.
                                                                  when diff-value exceeded this threshold, a sliding operation has occurred. */
 typedef struct tp_custom_cb tp_custom_cb_t;
 typedef enum {
@@ -78,10 +79,12 @@ typedef enum {
 typedef enum {
     TOUCHPAD_SINGLE_BUTTON = 0,
     TOUCHPAD_MATRIX_BUTTON,
+#if CONFIG_TOUCH_PAD_USE_SLIDER
     TOUCHPAD_LINEAR_SLIDER,
     TOUCHPAD_DUPLEX_SLIDER,
     TOUCHPAD_WHEEL_SLIDER,
-    TOUCHPAD_TYPE_MAX,
+#endif
+    TOUCHPAD_TYPE_MAX
 } tp_type_t;
 
 typedef struct {
@@ -100,8 +103,6 @@ typedef struct {
     float hysteresis_thr;       //The threshold prevents frequent triggering.
     float baseline_reset_thr;   //Basedata reset threshold.
     float slide_trigger_thr;    //Slide trigger threshold.
-    uint32_t filter_value;      //IIR filter period when touching.
-    uint32_t sum_ms;            //Long press parameter.
     uint16_t baseline;          //Base data update from filtered data. solve temperature drift.
     uint16_t debounce_count;    //Debounce count variable.
     uint16_t debounce_th;       //Debounce threshold. If exceeded, confirm the trigger.
@@ -109,22 +110,26 @@ typedef struct {
     uint16_t bl_reset_count_th; //Basedata reset threshold. If exceeded, reset basedata.
     uint16_t bl_update_count;   //Basedata update count variable.
     uint16_t bl_update_count_th;//Basedata update threshold. If exceeded, update basedata.
-    /*Serial trigger parameter*/
-    uint32_t serial_thres_sec;  //Continuously triggered threshold parameters.
-    uint32_t serial_interval_ms;//Continuously triggered counting parameters.
-
     #if USE_ESP_TIMER
     uint32_t interval_ms;
     esp_timer_handle_t serial_tmr;
     #else
-    TimerHandle_t serial_tmr;
+    TimerHandle_t serial_tmr;x
     #endif
-
-    tp_cb_t serial_cb;          //A callback.
     tp_cb_t *cb_group[TOUCHPAD_CB_MAX]; //Stores global variables for each channel parameter.
+    #if CONFIG_TOUCH_PAD_USE_CB_SERIAL
+    tp_cb_t serial_cb;          //A callback.
+    /*Serial trigger parameter*/
+    uint32_t serial_thres_sec;  //Continuously triggered threshold parameters.
+    uint32_t serial_interval_ms;//Continuously triggered counting parameters.
+    uint32_t sum_ms;            //Long press parameter.
+    #endif
+    #if CONFIG_TOUCH_PAD_USE_CB_CUSTOM
     tp_custom_cb_t *custom_cbs; //User-defined callback function.
+    #endif
 } tp_dev_t;
 
+#if CONFIG_TOUCH_PAD_USE_SLIDER
 typedef struct {
     float pos_scale;
     float pos_range;
@@ -133,7 +138,9 @@ typedef struct {
     float *calc_val;
     tp_handle_t *tp_handles;
 } tp_slide_t;
+#endif
 
+#if CONFIG_TOUCH_PAD_USE_CB_CUSTOM
 struct tp_custom_cb {
     tp_cb cb;
     void *arg;
@@ -146,6 +153,7 @@ struct tp_custom_cb {
     tp_dev_t *tp_dev;
     tp_custom_cb_t *next_cb;
 };
+#endif
 
 typedef enum {
     TOUCHPAD_MATRIX_ROW = 0,
@@ -168,8 +176,13 @@ typedef struct {
     tp_matrix_arg_t *matrix_args;
     tp_matrix_arg_t *matrix_args_y;
     tp_matrix_cb_t *cb_group[TOUCHPAD_CB_MAX];
+    #if CONFIG_TOUCH_PAD_USE_CB_CUSTOM
     tp_matrix_cus_cb_t *custom_cbs;
+    #endif
+
+    #if CONFIG_TOUCH_PAD_USE_CB_SERIAL
     tp_matrix_cb_t serial_cb;
+    #endif
     uint32_t serial_thres_sec;
     uint32_t serial_interval_ms;
     #if USE_ESP_TIMER
@@ -202,10 +215,10 @@ struct tp_matrix_cus_cb {
     tp_matrix_cus_cb_t *next_cb;
 };
 
-#define SLIDE_POS_INF   ((1 << 8) - 1)      // Record time of last touch, used to eliminate jitter
-static const char *TAG = "touchpad";        // Debug tag in esp log
-static bool g_init_flag = false;            // Judge if initialized the global setting of touch.
-static tp_dev_t *tp_group[TOUCH_PAD_MAX];   // Buffer of each button.
+#define SLIDE_POS_INF   ((1 << 8) - 1)                  // Record time of last touch, used to eliminate jitter
+static const char *TAG = "touchpad";                    // Debug tag in esp log
+static bool g_init_flag = false;                        // Judge if initialized the global setting of touch.
+static tp_dev_t *tp_group[TOUCH_PAD_MAX];               // Buffer of each button.
 static xSemaphoreHandle s_tp_mux = NULL;
 
 #if USE_ESP_TIMER
@@ -237,6 +250,7 @@ static void delete_timer(TimerHandle_t tmr) {
 }
 #endif
 
+#if CONFIG_TOUCH_PAD_USE_SLIDER
 /* IIR filter for silder position. */
 static uint32_t _slider_filter_iir(uint32_t in_now, uint32_t out_last, uint32_t k)
 {
@@ -354,6 +368,7 @@ static void tp_slide_pos_cb(void *arg)
     }
 #endif
 }
+#endif
 
 /* check and run the hooked callback function */
 static inline void callback_exec(tp_dev_t *tp_dev, tp_cb_type_t cb_type)
@@ -364,6 +379,7 @@ static inline void callback_exec(tp_dev_t *tp_dev, tp_cb_type_t cb_type)
     }
 }
 
+#if CONFIG_TOUCH_PAD_USE_CB_SERIAL
 /* check and run the hooked callback function */
 static void tp_serial_timer_cb(void *tmr)
 {
@@ -377,7 +393,9 @@ static void tp_serial_timer_cb(void *tmr)
         tp_dev->serial_cb.cb(tp_dev->serial_cb.arg);
     }
 }
+#endif
 
+#if CONFIG_TOUCH_PAD_USE_CB_CUSTOM
 static void tp_custom_timer_cb(void *tmr)
 {
     #if USE_ESP_TIMER
@@ -417,25 +435,22 @@ static inline void tp_custom_stop_cb_tmrs(tp_dev_t *tp_dev)
     tp_custom_cb_t *custom_cb = tp_dev->custom_cbs;
     while (custom_cb != NULL) {
         if (custom_cb->tmr != NULL) {
-            #if USE_ESP_TIMER
-            esp_err_t res;
-            res = esp_timer_stop(custom_cb->tmr);
-            if (res != ESP_ERR_INVALID_STATE)
-              ESP_ERROR_CHECK(res);
-            #else
-            xTimerStop(custom_cb->tmr, portMAX_DELAY);
-            #endif
+            stop_timer(custom_cb->tmr);
         }
         custom_cb = custom_cb->next_cb;
     }
 }
+#endif
 
 /* Call this function after reading the filter once. This function should be registered. */
-void filter_read_cb(uint16_t raw_data[], uint16_t filtered_data[])
+static void touch_pad_read_cb(uint16_t raw_data[], uint16_t filtered_data[])
 {
     int16_t diff_data = 0;
-    int8_t action_flag = -1;   // If action, increase the filter interval.
+
+    #if CONFIG_TOUCH_PAD_USE_SLIDER
     tp_dev_t *slide_trigger_dev = NULL;
+    #endif
+
     // Main loop to check every channel raw data.
     for (int i = 0; i < TOUCH_PAD_MAX; i++) {
         if (tp_group[i] != NULL) {
@@ -452,15 +467,11 @@ void filter_read_cb(uint16_t raw_data[], uint16_t filtered_data[])
                     tp_dev->debounce_count = 0; // Clean debounce count.
                     // bl_update_count_th control the baseline update frequency
                     if (++tp_dev->bl_update_count > tp_dev->bl_update_count_th) {
-                        if (-1 == action_flag) {
-                            action_flag = false;    // Not exceed action line.
-                        }
                         tp_dev->bl_update_count = 0;
                         // Baseline updating can use Jitter filter ?
                         tp_dev->baseline = filtered_data[i];
                     }
                 } else {
-                    action_flag = true; // Exceed action line, represent change the filter Interval.
                     tp_dev->bl_update_count = 0;
                     // If the diff data is larger than the touch threshold, touch action be triggered.
                     if (tp_dev->diff_rate >= tp_dev->touch_thr + tp_dev->hysteresis_thr) {
@@ -472,7 +483,9 @@ void filter_read_cb(uint16_t raw_data[], uint16_t filtered_data[])
                             tp_dev->state = TOUCHPAD_STATE_PUSH;
                             // run push event cb, reset custom event cb
                             callback_exec(tp_dev, TOUCHPAD_CB_PUSH);
+                            #if CONFIG_TOUCH_PAD_USE_CB_CUSTOM
                             tp_custom_reset_cb_tmrs(tp_dev);
+                            #endif
                         }
                         // diff data exceed the baseline reset line. reset baseline to raw data.
                     } else if (tp_dev->diff_rate <= 0 - tp_dev->baseline_reset_thr) {
@@ -487,16 +500,17 @@ void filter_read_cb(uint16_t raw_data[], uint16_t filtered_data[])
                         tp_dev->bl_reset_count = 0;
                     }
                 }
-            } else {    // The button is in touched status.
-                action_flag = true;
+            } else {
+                // The button is in touched status.
+                #if CONFIG_TOUCH_PAD_USE_CB_SERIAL
                 // The button to be pressed continued. long press.
                 if (tp_dev->diff_rate > tp_dev->touch_thr - tp_dev->hysteresis_thr) {
                     tp_dev->debounce_count = 0;
                     // sum_ms is the total time that the read value is under threshold, which means a touch event is on.
-                    tp_dev->sum_ms += tp_dev->filter_value;
+                    tp_dev->sum_ms += TOUCHPAD_MEAS_PERIOD_MS;
                     // whether this is the exact time that a serial event happens.
                     if (tp_dev->serial_thres_sec > 0
-                            && tp_dev->sum_ms - tp_dev->filter_value < tp_dev->serial_thres_sec * 1000
+                            && tp_dev->sum_ms - TOUCHPAD_MEAS_PERIOD_MS < tp_dev->serial_thres_sec * 1000
                             && tp_dev->sum_ms >= tp_dev->serial_thres_sec * 1000) {
                         tp_dev->state = TOUCHPAD_STATE_PRESS;
                         tp_dev->serial_cb.cb(tp_dev->serial_cb.arg);
@@ -508,37 +522,42 @@ void filter_read_cb(uint16_t raw_data[], uint16_t filtered_data[])
                         xTimerStart(tp_dev->serial_tmr, portMAX_DELAY);
                         #endif
                     }
-                } else {    // Check the release action.
+                } else
+                #endif
+                {    // Check the release action.
                     //  Debounce processing.
                     if (++tp_dev->debounce_count >= tp_dev->debounce_th \
                             || fabs(tp_dev->diff_rate) < tp_dev->noise_thr \
                             || tp_dev->touchChange < TOUCHPAD_TOUCH_LOW_SENSE_THRESHOLD) {
                         tp_dev->debounce_count = 0;
+                        #if CONFIG_TOUCH_PAD_USE_CB_TAP_EVENT
                         if (tp_dev->state == TOUCHPAD_STATE_PUSH) {
                             callback_exec(tp_dev, TOUCHPAD_CB_TAP);
                         }
+                        #endif
+                        #if CONFIG_TOUCH_PAD_USE_CB_SERIAL
                         tp_dev->sum_ms = 0; // Clean long press count event.
+                        #endif
                         tp_dev->state = TOUCHPAD_STATE_RELEASE;
                         callback_exec(tp_dev, TOUCHPAD_CB_RELEASE);
+                        #if CONFIG_TOUCH_PAD_USE_CB_CUSTOM
                         tp_custom_stop_cb_tmrs(tp_dev);
-                        if (tp_dev->serial_tmr) {
-                            #if USE_ESP_TIMER == 1
-                            esp_err_t res;
-                            res = esp_timer_stop(tp_dev->serial_tmr);
-                            if (res != ESP_ERR_INVALID_STATE)
-                                ESP_ERROR_CHECK(res);
-                            #else
-                            xTimerStop(tp_dev->serial_tmr, portMAX_DELAY);
-                            #endif
-                        }
+                        #endif
+                        if (tp_dev->serial_tmr)
+                            stop_timer(tp_dev->serial_tmr);
                     }
                 }
             }
+
+            #if CONFIG_TOUCH_PAD_USE_SLIDER
             // Check if the button also is slider element. All kind of slider. a button meanwhile is a slider.
             if (tp_dev->diff_rate > tp_dev->slide_trigger_thr && tp_dev->button_type >= TOUCHPAD_LINEAR_SLIDER) {
                 slide_trigger_dev = tp_dev;
-            } else if (tp_dev->button_type < TOUCHPAD_LINEAR_SLIDER) {
-#ifdef CONFIG_DATA_SCOPE_DEBUG
+            }
+            #endif
+            
+            #ifdef CONFIG_DATA_SCOPE_DEBUG
+            if (tp_dev->button_type <= TOUCHPAD_MATRIX_BUTTON) {
                 tune_dev_data_t dev_data = {0};
                 dev_data.ch = i;
                 dev_data.raw = raw_data[i];
@@ -546,20 +565,17 @@ void filter_read_cb(uint16_t raw_data[], uint16_t filtered_data[])
                 dev_data.diff = diff_data;
                 dev_data.status = (tp_dev->state == TOUCHPAD_STATE_PUSH || tp_dev->state == TOUCHPAD_STATE_PRESS) ? 1 : 0;
                 tune_tool_set_device_data(&dev_data);
-#endif
             }
+            #endif
         }
     }
-    // Check the button status and to change the filter period.
-    if (true == action_flag) {
-        touch_pad_set_filter_period(TOUCHPAD_FILTER_TOUCH_PERIOD);
-    } else {
-        touch_pad_set_filter_period(TOUCHPAD_FILTER_IDLE_PERIOD);
-    }
+
+    #if CONFIG_TOUCH_PAD_USE_SLIDER
     if (NULL != slide_trigger_dev) {
         // if the pad is slide and raw data exceed noise th, it should update position.
         callback_exec(slide_trigger_dev, TOUCHPAD_CB_SLIDE);
     }
+    #endif
 }
 
 /* Creat a button element, init the element parameter */
@@ -575,8 +591,6 @@ tp_handle_t iot_tp_create(touch_pad_t touch_pad_num, float sensitivity)
         g_init_flag = true;
         touch_pad_init();
         touch_pad_set_voltage(TOUCH_HVOLT_2V7, TOUCH_LVOLT_0V5, TOUCH_HVOLT_ATTEN_1V);
-        touch_pad_filter_start(TOUCHPAD_FILTER_TOUCH_PERIOD);
-        touch_pad_set_filter_read_cb(filter_read_cb);
 
         // Set FSM mode:
         uint32_t sleep_cycle = TOUCHPAD_SLEEP_CYCLE_MS * 150;   // TODO - use <rtc_clk_slow_freq_get_hz>
@@ -585,7 +599,7 @@ tp_handle_t iot_tp_create(touch_pad_t touch_pad_num, float sensitivity)
         uint32_t meas_cycle = TOUCHPAD_MEAS_CYCLE_US * 8;
         if (meas_cycle > 0xffff)
           meas_cycle = 0xffff;
-        esp_err_t res = touch_pad_set_meas_time(sleep_cycle, (uint16_t)meas_cycle);
+        esp_err_t res = touch_pad_set_meas_time((uint16_t)sleep_cycle, (uint16_t)meas_cycle);
         res = touch_pad_set_fsm_mode(TOUCH_FSM_MODE_TIMER);
         ESP_ERROR_CHECK(res);
     }
@@ -613,11 +627,12 @@ tp_handle_t iot_tp_create(touch_pad_t touch_pad_num, float sensitivity)
     ESP_LOGD(TAG, "tp[%d] initial value: %d\n", touch_pad_num, tp_val);
     // Init the status variable for the touch pad.
     tp_dev_t *tp_dev = (tp_dev_t *) calloc(1, sizeof(tp_dev_t));
-    tp_dev->filter_value = TOUCHPAD_FILTER_TOUCH_PERIOD;
     tp_dev->touch_pad_num = touch_pad_num;
+    #if CONFIG_TOUCH_PAD_USE_CB_SERIAL
     tp_dev->sum_ms = 0;
     tp_dev->serial_thres_sec = 0;
     tp_dev->serial_interval_ms = 0;
+    #endif
     tp_dev->state = TOUCHPAD_STATE_IDLE;
     tp_dev->baseline = tp_val;
     tp_dev->touchChange = sensitivity;
@@ -625,9 +640,9 @@ tp_handle_t iot_tp_create(touch_pad_t touch_pad_num, float sensitivity)
     tp_dev->noise_thr = tp_dev->touch_thr * TOUCHPAD_NOISE_THRESHOLD_PERCENT;
     tp_dev->hysteresis_thr = tp_dev->touch_thr * TOUCHPAD_HYSTERESIS_THRESHOLD_PERCENT;
     tp_dev->baseline_reset_thr = tp_dev->touch_thr * TOUCHPAD_BASELINE_RESET_THRESHOLD_PERCENT;
-    tp_dev->debounce_th = TOUCHPAD_STATE_SWITCH_DEBOUNCE / TOUCHPAD_FILTER_TOUCH_PERIOD;
+    tp_dev->debounce_th = TOUCHPAD_STATE_SWITCH_DEBOUNCE / TOUCHPAD_MEAS_PERIOD_MS;
     tp_dev->bl_reset_count_th = TOUCHPAD_BASELINE_RESET_COUNT_THRESHOLD;
-    tp_dev->bl_update_count_th = TOUCHPAD_BASELINE_UPDATE_COUNT_THRESHOLD / TOUCHPAD_FILTER_IDLE_PERIOD;
+    tp_dev->bl_update_count_th = TOUCHPAD_BASELINE_UPDATE_COUNT_THRESHOLD / TOUCHPAD_MEAS_PERIOD_MS;
     ESP_LOGD(TAG, "Set max change rate of touch %.4f;\n\r\
                    Init data baseline %d;\n\r\
                    Touch threshold %.4f;\n\r\
@@ -674,6 +689,8 @@ esp_err_t iot_tp_delete(tp_handle_t tp_handle)
             tp_dev->cb_group[i] = NULL;
         }
     }
+
+    #if CONFIG_TOUCH_PAD_USE_CB_CUSTOM
     tp_custom_cb_t *custom_cb = tp_dev->custom_cbs;
     while (custom_cb != NULL) {
         tp_custom_cb_t *cb_next = custom_cb->next_cb;
@@ -683,10 +700,15 @@ esp_err_t iot_tp_delete(tp_handle_t tp_handle)
         custom_cb = cb_next;
     }
     tp_dev->custom_cbs = NULL;
+    #endif
+
+    #if CONFIG_TOUCH_PAD_USE_CB_SERIAL
     if (tp_dev->serial_tmr != NULL) {
         delete_timer(tp_dev->serial_tmr);
         tp_dev->serial_tmr = NULL;
     }
+    #endif
+
     free(tp_handle);
     return ESP_OK;
 }
@@ -710,13 +732,15 @@ esp_err_t iot_tp_add_cb(tp_handle_t tp_handle, tp_cb_type_t cb_type, tp_cb cb, v
     return ESP_OK;
 }
 
+#if CONFIG_TOUCH_PAD_USE_CB_SERIAL
+
 /* Add callback API for long press action. */
 esp_err_t iot_tp_set_serial_trigger(tp_handle_t tp_handle, uint32_t trigger_thres_sec, uint32_t interval_ms, tp_cb cb, void *arg)
 {
     POINT_ASSERT(TAG, tp_handle);
     POINT_ASSERT(TAG, cb);
     IOT_CHECK(TAG, trigger_thres_sec != 0, ESP_FAIL);
-    IOT_CHECK(TAG, interval_ms > portTICK_RATE_MS, ESP_FAIL);
+    IOT_CHECK(TAG, interval_ms > portTICK_RATE_MS, ESP_FAIL);   // TODO
     tp_dev_t *tp_dev = (tp_dev_t *) tp_handle;
     if (tp_dev->serial_tmr == NULL) {
         #if USE_ESP_TIMER == 1
@@ -743,7 +767,9 @@ esp_err_t iot_tp_set_serial_trigger(tp_handle_t tp_handle, uint32_t trigger_thre
     tp_dev->serial_cb.arg = arg;
     return ESP_OK;
 }
+#endif
 
+#if CONFIG_TOUCH_PAD_USE_CB_CUSTOM
 esp_err_t iot_tp_add_custom_cb(tp_handle_t tp_handle, uint32_t press_sec, tp_cb cb, void  *arg)
 {
     POINT_ASSERT(TAG, tp_handle);
@@ -775,6 +801,7 @@ esp_err_t iot_tp_add_custom_cb(tp_handle_t tp_handle, uint32_t press_sec, tp_cb 
     tp_dev->custom_cbs = cb_new;
     return ESP_OK;
 }
+#endif
 
 touch_pad_t iot_tp_num_get(const tp_handle_t tp_handle)
 {
@@ -804,20 +831,6 @@ esp_err_t iot_tp_get_threshold(const tp_handle_t tp_handle, float *threshold)
     return ESP_OK;
 }
 
-esp_err_t iot_tp_get_touch_filter_interval(const tp_handle_t tp_handle, uint32_t *filter_ms)
-{
-    POINT_ASSERT(TAG, tp_handle);
-    *filter_ms = TOUCHPAD_FILTER_TOUCH_PERIOD;
-    return ESP_OK;
-}
-
-esp_err_t iot_tp_get_idle_filter_interval(const tp_handle_t tp_handle, uint32_t *filter_ms)
-{
-    POINT_ASSERT(TAG, tp_handle);
-    *filter_ms = TOUCHPAD_FILTER_IDLE_PERIOD;
-    return ESP_OK;
-}
-
 esp_err_t iot_tp_read(const tp_handle_t tp_handle, uint16_t *touch_value_ptr)
 {
     POINT_ASSERT(TAG, tp_handle);
@@ -831,6 +844,8 @@ esp_err_t tp_read_raw(const tp_handle_t tp_handle, uint16_t *touch_value_ptr)
     tp_dev_t *tp_dev = (tp_dev_t *) tp_handle;
     return touch_pad_read_raw_data(tp_dev->touch_pad_num, touch_value_ptr);
 }
+
+#if CONFIG_TOUCH_PAD_USE_SLIDER
 
 tp_slide_handle_t iot_tp_slide_create(uint8_t num, const touch_pad_t *tps, uint8_t pos_range,
                                       const float *p_sensitivity)
@@ -906,7 +921,9 @@ uint8_t iot_tp_slide_position(tp_slide_handle_t tp_slide_handle)
     tp_slide_t *tp_slide = (tp_slide_t *) tp_slide_handle;
     return (uint8_t) tp_slide->slide_pos;
 }
+#endif /* CONFIG_TOUCH_PAD_USE_SLIDER */
 
+#if CONFIG_TOUCH_PAD_USE_CB_CUSTOM
 // reset all the cumstom timers of matrix object
 static inline void matrix_reset_cb_tmrs(tp_matrix_t *tp_matrix)
 {
@@ -939,6 +956,7 @@ static inline void matrix_stop_cb_tmrs(tp_matrix_t *tp_matrix)
         custom_cb = custom_cb->next_cb;
     }
 }
+#endif
 
 static void tp_matrix_push_cb(void *arg)
 {
@@ -996,13 +1014,17 @@ static void tp_matrix_push_cb(void *arg)
             tp_matrix_cb_t *cb_info = tp_matrix->cb_group[TOUCHPAD_CB_PUSH];
             cb_info->cb(cb_info->arg, idx / tp_matrix->y_num, idx % tp_matrix->y_num);
         }
+        #if CONFIG_TOUCH_PAD_USE_CB_CUSTOM
         matrix_reset_cb_tmrs(tp_matrix);
+        #endif
+        #if CONFIG_TOUCH_PAD_USE_CB_SERIAL
         if (tp_matrix->serial_tmr != NULL) {
             #if USE_ESP_TIMER == 1
             #else
             xTimerChangePeriod(tp_matrix->serial_tmr, tp_matrix->serial_thres_sec * 1000 / portTICK_RATE_MS, portMAX_DELAY);
             #endif
         }
+        #endif
     }
 }
 
@@ -1024,13 +1046,18 @@ static void tp_matrix_release_cb(void *arg)
             tp_matrix_cb_t *cb_info = tp_matrix->cb_group[TOUCHPAD_CB_RELEASE];
             cb_info->cb(cb_info->arg, idx / tp_matrix->y_num, idx % tp_matrix->y_num);
         }
+        #if CONFIG_TOUCH_PAD_USE_CB_CUSTOM
         matrix_stop_cb_tmrs(tp_matrix);
+        #endif
+        #if CONFIG_TOUCH_PAD_USE_CB_SERIAL
         if (tp_matrix->serial_tmr != NULL) {
             stop_timer(tp_matrix->serial_tmr);
         }
+        #endif
     }
 }
 
+#if CONFIG_TOUCH_PAD_USE_CB_TAP
 static void tp_matrix_tap_cb(void *arg)
 {
     tp_matrix_arg_t *matrix_arg = (tp_matrix_arg_t *) arg;
@@ -1048,6 +1075,7 @@ static void tp_matrix_tap_cb(void *arg)
         }
     }
 }
+#endif
 
 static void tp_matrix_cus_tmr_cb(void *tmr)
 {
@@ -1065,6 +1093,7 @@ static void tp_matrix_cus_tmr_cb(void *tmr)
     }
 }
 
+#if CONFIG_TOUCH_PAD_USE_CB_SERIAL
 static void tp_matrix_serial_trigger_cb(void *tmr)
 {
     #if USE_ESP_TIMER == 1
@@ -1084,6 +1113,7 @@ static void tp_matrix_serial_trigger_cb(void *tmr)
         #endif
     }
 }
+#endif
 
 tp_matrix_handle_t iot_tp_matrix_create(uint8_t x_num, uint8_t y_num, const touch_pad_t *x_tps, \
                                         const touch_pad_t *y_tps, const float *p_sensitivity)
@@ -1130,7 +1160,9 @@ tp_matrix_handle_t iot_tp_matrix_create(uint8_t x_num, uint8_t y_num, const touc
         tp_matrix->matrix_args[i].type = TOUCHPAD_MATRIX_ROW;
         iot_tp_add_cb(tp_matrix->x_tps[i], TOUCHPAD_CB_PUSH, tp_matrix_push_cb, tp_matrix->matrix_args + i);
         iot_tp_add_cb(tp_matrix->x_tps[i], TOUCHPAD_CB_RELEASE, tp_matrix_release_cb, tp_matrix->matrix_args + i);
+        #if CONFIG_TOUCH_PAD_USE_CB_TAP
         iot_tp_add_cb(tp_matrix->x_tps[i], TOUCHPAD_CB_TAP, tp_matrix_tap_cb, tp_matrix->matrix_args + i);
+        #endif
     }
     for (int i = 0; i < y_num; i++) {
         if (p_sensitivity) {
@@ -1146,7 +1178,9 @@ tp_matrix_handle_t iot_tp_matrix_create(uint8_t x_num, uint8_t y_num, const touc
         tp_matrix->matrix_args[i + x_num].type = TOUCHPAD_MATRIX_COLUMN;
         iot_tp_add_cb(tp_matrix->y_tps[i], TOUCHPAD_CB_PUSH, tp_matrix_push_cb, &tp_matrix->matrix_args[i + x_num]);
         iot_tp_add_cb(tp_matrix->y_tps[i], TOUCHPAD_CB_RELEASE, tp_matrix_release_cb, &tp_matrix->matrix_args[i + x_num]);
+        #if CONFIG_TOUCH_PAD_USE_CB_TAP
         iot_tp_add_cb(tp_matrix->y_tps[i], TOUCHPAD_CB_TAP, tp_matrix_tap_cb, &tp_matrix->matrix_args[i + x_num]);
+        #endif
     }
     tp_matrix->active_state = TOUCHPAD_STATE_IDLE;
     return (tp_matrix_handle_t)tp_matrix;
@@ -1195,6 +1229,8 @@ esp_err_t iot_tp_matrix_delete(tp_matrix_handle_t tp_matrix_hd)
             tp_matrix->cb_group[i] = NULL;
         }
     }
+
+    #if CONFIG_TOUCH_PAD_USE_CB_CUSTOM
     tp_matrix_cus_cb_t *custom_cb = tp_matrix->custom_cbs;
     while (custom_cb != NULL) {
         tp_matrix_cus_cb_t *cb_next = custom_cb->next_cb;
@@ -1203,11 +1239,16 @@ esp_err_t iot_tp_matrix_delete(tp_matrix_handle_t tp_matrix_hd)
         free(custom_cb);
         custom_cb = cb_next;
     }
+    tp_matrix->custom_cbs = NULL;
+    #endif
+
+    #if CONFIG_TOUCH_PAD_USE_CB_SERIAL
     if (tp_matrix->serial_tmr != NULL) {
         delete_timer(tp_matrix->serial_tmr);
         tp_matrix->serial_tmr = NULL;
     }
-    tp_matrix->custom_cbs = NULL;
+    #endif
+
     free(tp_matrix->x_tps);
     free(tp_matrix->y_tps);
     free(tp_matrix->matrix_args);
@@ -1233,6 +1274,7 @@ esp_err_t iot_tp_matrix_add_cb(tp_matrix_handle_t tp_matrix_hd, tp_cb_type_t cb_
     return ESP_OK;
 }
 
+#if CONFIG_TOUCH_PAD_USE_CB_CUSTOM
 esp_err_t iot_tp_matrix_add_custom_cb(tp_matrix_handle_t tp_matrix_hd, uint32_t press_sec, tp_matrix_cb cb, void *arg)
 {
     POINT_ASSERT(TAG, tp_matrix_hd);
@@ -1266,7 +1308,9 @@ esp_err_t iot_tp_matrix_add_custom_cb(tp_matrix_handle_t tp_matrix_hd, uint32_t 
     tp_matrix->custom_cbs = cb_new;
     return ESP_OK;
 }
+#endif
 
+#if CONFIG_TOUCH_PAD_USE_CB_SERIAL
 esp_err_t iot_tp_matrix_set_serial_trigger(tp_matrix_handle_t tp_matrix_hd, uint32_t trigger_thres_sec, uint32_t interval_ms, tp_matrix_cb cb, void *arg)
 {
     POINT_ASSERT(TAG, tp_matrix_hd);
@@ -1291,3 +1335,4 @@ esp_err_t iot_tp_matrix_set_serial_trigger(tp_matrix_handle_t tp_matrix_hd, uint
     POINT_ASSERT(TAG, tp_matrix->serial_tmr);
     return ESP_OK;
 }
+#endif
