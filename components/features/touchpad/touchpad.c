@@ -50,11 +50,11 @@
 /*************Fixed Parameters********************/
 #define SLDER_POS_FILTER_FACTOR_DEFAULT             4       /**< Slider IIR filter parameters. */
 
-#define TOUCHPAD_MEAS_PERIOD_MS                     40
+#define TOUCHPAD_MEAS_PERIOD_MS                     20
 #define TOUCHPAD_MEAS_CYCLE_US                      8192    /* 8192 - max */
 #define TOUCHPAD_SLEEP_CYCLE_MS                     (TOUCHPAD_MEAS_PERIOD_MS - TOUCHPAD_MEAS_CYCLE_US/1000)     /* 437 - max */
 
-#define TOUCHPAD_STATE_SWITCH_DEBOUNCE              160     /**< 160ms; Debounce threshold max coun value. */
+#define TOUCHPAD_STATE_SWITCH_DEBOUNCE              80     /**< 80ms; Debounce threshold max coun value. */
 #define TOUCHPAD_BASELINE_RESET_COUNT_THRESHOLD     5       /**< 5 count number; All channels; */
 #define TOUCHPAD_BASELINE_UPDATE_COUNT_THRESHOLD    800     /**< 800ms; Baseline update cycle. */
 #define TOUCHPAD_TOUCH_LOW_SENSE_THRESHOLD          ((float)0.03)    /**< 3% ; Set the low sensitivity threshold.
@@ -523,10 +523,10 @@ static void touch_pad_read_cb(uint16_t raw_data[], uint16_t filtered_data[])
                 }
             } else {
                 // The button is in touched status.
-                #if CONFIG_TOUCH_PAD_USE_CB_SERIAL
                 // The button to be pressed continued. long press.
                 if (tp_dev->diff_rate > tp_dev->touch_thr - tp_dev->hysteresis_thr) {
                     tp_dev->debounce_count = 0;
+                    #if CONFIG_TOUCH_PAD_USE_CB_SERIAL
                     // sum_ms is the total time that the read value is under threshold, which means a touch event is on.
                     tp_dev->sum_ms += TOUCHPAD_MEAS_PERIOD_MS;
                     // whether this is the exact time that a serial event happens.
@@ -543,9 +543,8 @@ static void touch_pad_read_cb(uint16_t raw_data[], uint16_t filtered_data[])
                         xTimerStart(tp_dev->serial_tmr, portMAX_DELAY);
                         #endif
                     }
-                } else
-                #endif
-                {    // Check the release action.
+                    #endif
+                } else {    // Check the release action.
                     //  Debounce processing.
                     if (++tp_dev->debounce_count >= tp_dev->debounce_th \
                             || fabs(tp_dev->diff_rate) < tp_dev->noise_thr \
@@ -599,6 +598,20 @@ static void touch_pad_read_cb(uint16_t raw_data[], uint16_t filtered_data[])
     #endif
 }
 
+#define TOUCH_PAD_FILTER_FACTOR_DEFAULT   (4)   // IIR filter coefficient.
+#define TOUCH_PAD_SHIFT_DEFAULT           (4)   // Increase computing accuracy.
+#define TOUCH_PAD_SHIFT_ROUND_DEFAULT     (8)   // ROUND = 2^(n-1); rounding off for fractional.
+
+static uint32_t touch_filter_iir(uint32_t in_now, uint32_t out_last, uint32_t k)
+{
+    if (k == 0) {
+        return in_now;
+    } else {
+        uint32_t out_now = (in_now + (k - 1) * out_last) / k;
+        return out_now;
+    }
+}
+
 static void Thread(void *_context) {
     (void)_context;
     ESP_LOGI(TAG, "Thread started");
@@ -615,15 +628,19 @@ static void Thread(void *_context) {
             raw[i] = tp_value[i];
 
         // Filter process:
-        uint16_t filter[TOUCH_PAD_MAX];
+        uint16_t filtered[TOUCH_PAD_MAX];
+        static uint32_t filtered_temp[TOUCH_PAD_MAX] = {0};
         for (int i = 0; i < TOUCH_PAD_MAX; i++) {
             if (tp_group[i] != NULL) {
-              filter[i] = raw[i];   // TODO
+              filtered_temp[i] = filtered_temp[i] == 0 ? ((uint32_t)raw[i] << TOUCH_PAD_SHIFT_DEFAULT) : filtered_temp[i];
+              filtered_temp[i] = touch_filter_iir((raw[i] << TOUCH_PAD_SHIFT_DEFAULT),
+                                                     filtered_temp[i], TOUCH_PAD_FILTER_FACTOR_DEFAULT);
+              filtered[i] = (filtered_temp[i] + TOUCH_PAD_SHIFT_ROUND_DEFAULT) >> TOUCH_PAD_SHIFT_DEFAULT;
             }
         }
 
         // Callback:
-        touch_pad_read_cb(raw, filter);
+        touch_pad_read_cb(raw, filtered);
     }
 }
 
