@@ -68,6 +68,11 @@
                                                                  for 'RESET_COUNT_THRESHOLD' times, then reset baseline to raw data. */
 #define TOUCHPAD_SLIDER_TRIGGER_THRESHOLD_PERCENT   ((float)0.50)    /**< 50%; This is slider type triggering threshold, should large than noise threshold.
                                                                  when diff-value exceeded this threshold, a sliding operation has occurred. */
+
+#define TOUCHPAD_FILTER_FACTOR_DEFAULT   (4)   // IIR filter coefficient.
+#define TOUCHPAD_SHIFT_DEFAULT           (4)   // Increase computing accuracy.
+#define TOUCHPAD_SHIFT_ROUND_DEFAULT     (8)   // ROUND = 2^(n-1); rounding off for fractional.
+
 typedef struct tp_custom_cb tp_custom_cb_t;
 typedef enum {
     TOUCHPAD_STATE_IDLE = 0,
@@ -598,10 +603,6 @@ static void touch_pad_read_cb(uint16_t raw_data[], uint16_t filtered_data[])
     #endif
 }
 
-#define TOUCH_PAD_FILTER_FACTOR_DEFAULT   (4)   // IIR filter coefficient.
-#define TOUCH_PAD_SHIFT_DEFAULT           (4)   // Increase computing accuracy.
-#define TOUCH_PAD_SHIFT_ROUND_DEFAULT     (8)   // ROUND = 2^(n-1); rounding off for fractional.
-
 static uint32_t touch_filter_iir(uint32_t in_now, uint32_t out_last, uint32_t k)
 {
     if (k == 0) {
@@ -632,10 +633,10 @@ static void Thread(void *_context) {
         static uint32_t filtered_temp[TOUCH_PAD_MAX] = {0};
         for (int i = 0; i < TOUCH_PAD_MAX; i++) {
             if (tp_group[i] != NULL) {
-              filtered_temp[i] = filtered_temp[i] == 0 ? ((uint32_t)raw[i] << TOUCH_PAD_SHIFT_DEFAULT) : filtered_temp[i];
-              filtered_temp[i] = touch_filter_iir((raw[i] << TOUCH_PAD_SHIFT_DEFAULT),
-                                                     filtered_temp[i], TOUCH_PAD_FILTER_FACTOR_DEFAULT);
-              filtered[i] = (filtered_temp[i] + TOUCH_PAD_SHIFT_ROUND_DEFAULT) >> TOUCH_PAD_SHIFT_DEFAULT;
+              filtered_temp[i] = filtered_temp[i] == 0 ? ((uint32_t)raw[i] << TOUCHPAD_SHIFT_DEFAULT) : filtered_temp[i];
+              filtered_temp[i] = touch_filter_iir((raw[i] << TOUCHPAD_SHIFT_DEFAULT),
+                                                     filtered_temp[i], TOUCHPAD_FILTER_FACTOR_DEFAULT);
+              filtered[i] = (filtered_temp[i] + TOUCHPAD_SHIFT_ROUND_DEFAULT) >> TOUCHPAD_SHIFT_DEFAULT;
             }
         }
 
