@@ -753,7 +753,7 @@ tp_handle_t iot_tp_create(touch_pad_t touch_pad_num, float sensitivity)
     tune_tool_set_device_info(&dev_info);
 
     tune_dev_parameter_t dev_para = {0};
-    dev_para.filter_period = TOUCHPAD_FILTER_IDLE_PERIOD;
+    dev_para.filter_period = TOUCHPAD_MEAS_PERIOD_MS;
     dev_para.debounce_ms = TOUCHPAD_STATE_SWITCH_DEBOUNCE;
     dev_para.base_reset_cnt = TOUCHPAD_BASELINE_RESET_COUNT_THRESHOLD;
     dev_para.base_update_cnt = TOUCHPAD_BASELINE_UPDATE_COUNT_THRESHOLD;
