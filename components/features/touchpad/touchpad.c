@@ -220,6 +220,27 @@ static const char *TAG = "touchpad";                    // Debug tag in esp log
 static bool g_init_flag = false;                        // Judge if initialized the global setting of touch.
 static tp_dev_t *tp_group[TOUCH_PAD_MAX];               // Buffer of each button.
 static xSemaphoreHandle s_tp_mux = NULL;
+static uint16_t tp_value[TOUCH_PAD_MAX];
+
+static TaskHandle_t task_handle;
+
+static IRAM_ATTR void tp_rtc_irq_handler(void *arg)
+{
+    touch_pad_clear_status();
+    for (int i = 0; i < TOUCH_PAD_MAX; i++) {
+        if (tp_group[i] != NULL) {
+            tp_value[i] = touch_hal_read_raw_data(i);
+        }
+    }
+
+    BaseType_t task_woken = pdFALSE;
+    BaseType_t res = xTaskNotifyFromISR(task_handle, 0, eNoAction, &task_woken);
+    assert(res == pdTRUE);
+    if (task_woken == pdTRUE)
+    {
+        portYIELD_FROM_ISR();
+    }
+}
 
 #if USE_ESP_TIMER
 static void stop_timer(esp_timer_handle_t tmr) {
@@ -578,6 +599,34 @@ static void touch_pad_read_cb(uint16_t raw_data[], uint16_t filtered_data[])
     #endif
 }
 
+static void Thread(void *_context) {
+    (void)_context;
+    ESP_LOGI(TAG, "Thread started");
+
+    touch_pad_intr_enable();
+    while (1) {
+
+        // Wait notification from interrupt:
+        xTaskNotifyWait(0, 0, NULL, portMAX_DELAY);
+
+        // Copy raw data:
+        uint16_t raw[TOUCH_PAD_MAX];
+        for (int i = 0; i < TOUCH_PAD_MAX; i++)
+            raw[i] = tp_value[i];
+
+        // Filter process:
+        uint16_t filter[TOUCH_PAD_MAX];
+        for (int i = 0; i < TOUCH_PAD_MAX; i++) {
+            if (tp_group[i] != NULL) {
+              filter[i] = raw[i];   // TODO
+            }
+        }
+
+        // Callback:
+        touch_pad_read_cb(raw, filter);
+    }
+}
+
 /* Creat a button element, init the element parameter */
 tp_handle_t iot_tp_create(touch_pad_t touch_pad_num, float sensitivity)
 {
@@ -585,6 +634,19 @@ tp_handle_t iot_tp_create(touch_pad_t touch_pad_num, float sensitivity)
     uint32_t avg = 0;
     uint8_t num = 0;
     if (g_init_flag == false) {
+
+        // Touch Pad task create:
+        BaseType_t res;
+        res = xTaskCreatePinnedToCore(
+                                Thread,
+                                "TouchPad",
+                                2048,
+                                (void*)NULL,
+                                2,
+                                &task_handle, APP_CPU_NUM);
+        IOT_CHECK(TAG, res == pdPASS, NULL);
+        IOT_CHECK(TAG, task_handle != NULL, NULL);
+
         // global touch sensor hardware init
         s_tp_mux = xSemaphoreCreateMutex();
         IOT_CHECK(TAG, s_tp_mux != NULL, NULL);
@@ -599,9 +661,12 @@ tp_handle_t iot_tp_create(touch_pad_t touch_pad_num, float sensitivity)
         uint32_t meas_cycle = TOUCHPAD_MEAS_CYCLE_US * 8;
         if (meas_cycle > 0xffff)
           meas_cycle = 0xffff;
-        esp_err_t res = touch_pad_set_meas_time((uint16_t)sleep_cycle, (uint16_t)meas_cycle);
+        res = touch_pad_set_meas_time((uint16_t)sleep_cycle, (uint16_t)meas_cycle);
         res = touch_pad_set_fsm_mode(TOUCH_FSM_MODE_TIMER);
         ESP_ERROR_CHECK(res);
+
+        // Register touch interrupt ISR:
+        touch_pad_isr_register(tp_rtc_irq_handler, NULL);
     }
     IOT_CHECK(TAG, touch_pad_num < TOUCH_PAD_MAX, NULL);
     IOT_CHECK(TAG, sensitivity > 0, NULL);
@@ -615,8 +680,15 @@ tp_handle_t iot_tp_create(touch_pad_t touch_pad_num, float sensitivity)
         xSemaphoreGive(s_tp_mux);
         return NULL;
     }
-    // Init the target touch pad.
-    touch_pad_config(touch_pad_num, 0);
+    // Init the target touch pad:
+    static bool f_thresh_set = false;
+    uint16_t thresh = 0;
+    if (f_thresh_set == false) {
+        f_thresh_set = true;
+        thresh = 0xffff;      // set max level for first pad - for one interrupt event
+                              // for one measurement period of all touch pads
+    }
+    touch_pad_config(touch_pad_num, thresh);
     vTaskDelay(20 / portTICK_PERIOD_MS);    // Wait system into stable status.
     for (int i = 0; i < 3; i++) {
         touch_pad_read(touch_pad_num, &tp_val);
