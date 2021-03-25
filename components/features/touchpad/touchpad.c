@@ -116,7 +116,6 @@ typedef struct {
     uint16_t bl_update_count;   //Basedata update count variable.
     uint16_t bl_update_count_th;//Basedata update threshold. If exceeded, update basedata.
     #if USE_ESP_TIMER
-    uint32_t interval_ms;
     esp_timer_handle_t serial_tmr;
     #else
     TimerHandle_t serial_tmr;
@@ -542,7 +541,7 @@ static void touch_pad_read_cb(uint16_t raw_data[], uint16_t filtered_data[])
                         tp_dev->serial_cb.cb(tp_dev->serial_cb.arg);
                         #if USE_ESP_TIMER == 1
                         esp_err_t res;
-                        res = esp_timer_start_periodic(tp_dev->serial_tmr, tp_dev->interval_ms);
+                        res = esp_timer_start_once(tp_dev->serial_tmr, tp_dev->serial_interval_ms);
                         ESP_ERROR_CHECK(res);
                         #else
                         xTimerStart(tp_dev->serial_tmr, portMAX_DELAY);
@@ -834,7 +833,6 @@ esp_err_t iot_tp_set_serial_trigger(tp_handle_t tp_handle, uint32_t trigger_thre
     tp_dev_t *tp_dev = (tp_dev_t *) tp_handle;
     if (tp_dev->serial_tmr == NULL) {
         #if USE_ESP_TIMER == 1
-        tp_dev->interval_ms = interval_ms;
         esp_timer_create_args_t timer_args;
         timer_args.arg = tp_dev;
         timer_args.callback = tp_serial_timer_cb;
@@ -842,7 +840,7 @@ esp_err_t iot_tp_set_serial_trigger(tp_handle_t tp_handle, uint32_t trigger_thre
         timer_args.name = "serial_tmr";
         esp_timer_create(&timer_args, &tp_dev->serial_tmr);
         #else
-        tp_dev->serial_tmr = xTimerCreate("serial_tmr", interval_ms / portTICK_RATE_MS, pdTRUE, tp_dev, tp_serial_timer_cb);
+        tp_dev->serial_tmr = xTimerCreate("serial_tmr", interval_ms / portTICK_RATE_MS, pdFALSE, tp_dev, tp_serial_timer_cb);
         POINT_ASSERT(TAG, tp_dev->serial_tmr);
         #endif
     } else {
@@ -1110,6 +1108,7 @@ static void tp_matrix_push_cb(void *arg)
         #if CONFIG_TOUCH_PAD_USE_CB_SERIAL
         if (tp_matrix->serial_tmr != NULL) {
             #if USE_ESP_TIMER == 1
+            // TODO - !?
             #else
             xTimerChangePeriod(tp_matrix->serial_tmr, tp_matrix->serial_thres_sec * 1000 / portTICK_RATE_MS, portMAX_DELAY);
             #endif
@@ -1198,6 +1197,7 @@ static void tp_matrix_serial_trigger_cb(void *tmr)
         tp_matrix->serial_cb.cb(tp_matrix->serial_cb.arg, idx / tp_matrix->y_num, idx % tp_matrix->y_num);
 
         #if USE_ESP_TIMER == 1
+        // TODO - ?!
         #else
         xTimerChangePeriod(tp_matrix->serial_tmr, tp_matrix->serial_interval_ms / portTICK_RATE_MS, portMAX_DELAY);
         #endif
@@ -1380,7 +1380,7 @@ esp_err_t iot_tp_matrix_add_custom_cb(tp_matrix_handle_t tp_matrix_hd, uint32_t 
     timer_args.arg = cb_new;
     timer_args.callback = tp_matrix_cus_tmr_cb;
     timer_args.dispatch_method = ESP_TIMER_TASK;
-    timer_args.name = "custom_cb_tmr";
+    timer_args.name = "custom_tmr";
     esp_timer_create(&timer_args, &cb_new->tmr);
     #else
     cb_new->tmr = xTimerCreate("custom_tmr", press_sec * 1000 / portTICK_RATE_MS, pdFALSE, cb_new, tp_matrix_cus_tmr_cb);
