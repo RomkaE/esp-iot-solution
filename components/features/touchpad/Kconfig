@@ -30,7 +30,7 @@ menu "Touch Sensor"
         
 	choice TOUCH_PAD_TIMER_IMPLEMENT
 	    bool "Touch Pad Timer implementation"
-	    default TOUCH_PAD_USE_RTOS_TIMER
+	    default TOUCH_PAD_USE_ESP_TIMER
 	    help 
 	        Choose a implementation of timer for touch pad instance.
 	        
