@@ -119,7 +119,7 @@ typedef struct {
     uint32_t interval_ms;
     esp_timer_handle_t serial_tmr;
     #else
-    TimerHandle_t serial_tmr;x
+    TimerHandle_t serial_tmr;
     #endif
     tp_cb_t *cb_group[TOUCHPAD_CB_MAX]; //Stores global variables for each channel parameter.
     #if CONFIG_TOUCH_PAD_USE_CB_SERIAL
